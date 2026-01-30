@@ -1,4 +1,3 @@
-
 export enum UserRole {
   COMPANY = 'company',
   VESSEL = 'vessel'
@@ -11,21 +10,28 @@ export enum ReportStatus {
 
 export interface UserProfile {
   uid: string;
-  email: string;
   role: UserRole;
   companyId: string;
+
+  // Company users
+  email?: string;
+
+  // Vessel users
   shipId?: string;
   shipName?: string;
+  username?: string;
 }
 
 export interface Ship {
   shipId: string;
   shipName: string;
-  email: string;      // Login email managed by company
-  password: string;   // Login password managed by company
-  active: boolean;    // General status
-  isArchived: boolean; // Decommissioned/Old vessels
-  // Added companyId to fix "Property 'companyId' does not exist on type 'Ship'" error
+
+  // Vessel login
+  username: string;
+  password: string;
+
+  active: boolean;
+  isArchived: boolean;
   companyId: string;
 }
 
@@ -63,7 +69,7 @@ export interface MonthlyReport {
   guestMeals: number;
   guestMealDetails?: Record<string, GuestEntry[]>;
   supplyEntries?: SupplyEntry[];
-  items: Record<string, ProvisionItem[]>; 
+  items: Record<string, ProvisionItem[]>;
   openingTotal: number;
   suppliesTotal: number;
   closingTotal: number;
@@ -72,10 +78,14 @@ export interface MonthlyReport {
   status: ReportStatus;
   updatedAt: number;
   submittedAt?: number;
+
+  // Important for company filtering
+  companyId: string;
 }
 
 export interface Company {
   companyId: string;
   name: string;
+  adminUid: string;
   createdAt: number;
 }

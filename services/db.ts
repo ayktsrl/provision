@@ -1,218 +1,137 @@
-
 import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  getDocs, 
-  updateDoc, 
-  query, 
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  query,
   where,
   Firestore
 } from 'firebase/firestore';
-import { UserRole, ReportStatus, MonthlyReport, Ship } from '../types';
+import { getAuth, Auth } from 'firebase/auth';
+import { ReportStatus, MonthlyReport, Ship, Company } from '../types';
 
-// Placeholder config - replace with your actual keys from Firebase Console
+// ✅ Your real Firebase config
 const firebaseConfig = {
-  apiKey: "YOUR_ACTUAL_API_KEY",
-  authDomain: "your-project.firebaseapp.com",
-  projectId: "your-project-id",
-  storageBucket: "your-project.appspot.com",
-  messagingSenderId: "your-sender-id",
-  appId: "your-app-id"
+  apiKey: "AIzaSyBK9L2VCiHkF-Mb_uCbjgevyPLdrWGaQkM",
+  authDomain: "provisionfollowup.firebaseapp.com",
+  projectId: "provisionfollowup",
+  storageBucket: "provisionfollowup.firebasestorage.app",
+  messagingSenderId: "921802121277",
+  appId: "1:921802121277:web:9e9a06f4b735927aaa8a54"
 };
 
-let firestore: Firestore | null = null;
-let useLocalStorage = true;
+const app = initializeApp(firebaseConfig);
 
-// Check if the user has updated the placeholders
-if (firebaseConfig.apiKey !== "YOUR_ACTUAL_API_KEY" && firebaseConfig.projectId !== "your-project-id") {
-  try {
-    const app = initializeApp(firebaseConfig);
-    firestore = getFirestore(app);
-    useLocalStorage = false;
-  } catch (e) {
-    console.warn("Firebase initialization failed, falling back to LocalStorage:", e);
-    useLocalStorage = true;
-  }
-}
+const firestore: Firestore = getFirestore(app);
+export const auth: Auth = getAuth(app);
 
-/**
- * LOCAL STORAGE IMPLEMENTATION (Fallback)
- */
-const localStore = {
-  get: (key: string) => {
-    const val = localStorage.getItem(`provision_${key}`);
-    return val ? JSON.parse(val) : null;
+const companiesCol = () => collection(firestore, 'companies');
+const companyDoc = (companyId: string) => doc(firestore, 'companies', companyId);
+const shipsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'ships');
+const shipDoc = (companyId: string, shipId: string) => doc(firestore, 'companies', companyId, 'ships', shipId);
+const reportsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'reports');
+const reportDoc = (companyId: string, reportId: string) => doc(firestore, 'companies', companyId, 'reports', reportId);
+
+export const db = {
+  // --- Companies ---
+  createCompany: async (companyId: string, name: string): Promise<void> => {
+    const payload: Company = {
+      companyId,
+      name,
+      adminUid: companyId,
+      createdAt: Date.now()
+    };
+    await setDoc(companyDoc(companyId), payload, { merge: true });
   },
-  set: (key: string, val: any) => {
-    localStorage.setItem(`provision_${key}`, JSON.stringify(val));
-  }
-};
 
-const localDB = {
+  getCompany: async (companyId: string): Promise<Company | null> => {
+    const snap = await getDoc(companyDoc(companyId));
+    return snap.exists() ? (snap.data() as Company) : null;
+  },
+
+  // --- Ships ---
   getShips: async (companyId: string): Promise<Ship[]> => {
-    const ships = localStore.get('ships') || [];
-    return ships.filter((s: any) => s.companyId === companyId);
+    const snap = await getDocs(shipsCol(companyId));
+    return snap.docs.map(d => ({ shipId: d.id, ...(d.data() as Omit<Ship, 'shipId'>) }));
   },
-  createShip: async (companyId: string, shipName: string, email: string, password: string): Promise<Ship> => {
-    const ships = localStore.get('ships') || [];
+
+  createShip: async (companyId: string, shipName: string, username: string, password: string): Promise<Ship> => {
+    const ref = doc(shipsCol(companyId));
     const newShip: Ship = {
-      shipId: 'ship_' + Date.now(),
+      shipId: ref.id,
       shipName,
-      email,
+      username,
       password,
       active: true,
       isArchived: false,
       companyId
-    } as any;
-    ships.push(newShip);
-    localStore.set('ships', ships);
+    };
+    await setDoc(ref, newShip);
     return newShip;
   },
-  updateShip: async (shipId: string, updates: Partial<Ship>): Promise<void> => {
-    const ships = localStore.get('ships') || [];
-    const idx = ships.findIndex((s: any) => s.shipId === shipId);
-    if (idx !== -1) {
-      ships[idx] = { ...ships[idx], ...updates };
-      localStore.set('ships', ships);
-    }
-  },
-  updateShipArchived: async (shipId: string, isArchived: boolean): Promise<void> => {
-    await localDB.updateShip(shipId, { isArchived });
-  },
-  authenticateVessel: async (email: string, password: string): Promise<Ship | null> => {
-    const ships = localStore.get('ships') || [];
-    return ships.find((s: any) => s.email === email && s.password === password && !s.isArchived) || null;
-  },
-  getReports: async (companyId: string, month: string): Promise<MonthlyReport[]> => {
-    const reports = localStore.get('reports') || [];
-    return reports.filter((r: any) => r.companyId === companyId && r.month === month);
-  },
-  getReport: async (companyId: string, month: string, shipId: string): Promise<MonthlyReport | null> => {
-    const reports = localStore.get('reports') || [];
-    return reports.find((r: any) => r.shipId === shipId && r.month === month) || null;
-  },
-  saveReport: async (report: MonthlyReport): Promise<void> => {
-    const reports = localStore.get('reports') || [];
-    const idx = reports.findIndex((r: any) => r.shipId === report.shipId && r.month === report.month);
-    const updatedReport = { ...report, updatedAt: Date.now() };
-    if (idx !== -1) reports[idx] = updatedReport;
-    else reports.push(updatedReport);
-    localStore.set('reports', reports);
-  },
-  updateReportStatus: async (month: string, shipId: string, status: ReportStatus): Promise<void> => {
-    const reports = localStore.get('reports') || [];
-    const idx = reports.findIndex((r: any) => r.shipId === shipId && r.month === month);
-    if (idx !== -1) {
-      reports[idx].status = status;
-      reports[idx].updatedAt = Date.now();
-      if (status === ReportStatus.SUBMITTED) reports[idx].submittedAt = Date.now();
-      localStore.set('reports', reports);
-    }
-  }
-};
 
-/**
- * MAIN DB EXPORT (Proxies to Firestore or LocalStorage)
- */
-export const db = {
-  isLocal: () => useLocalStorage,
-  getShips: async (companyId: string) => {
-    if (useLocalStorage || !firestore) return localDB.getShips(companyId);
-    try {
-      const q = query(collection(firestore, 'ships'), where('companyId', '==', companyId));
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({ shipId: doc.id, ...doc.data() } as Ship));
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.getShips(companyId);
-    }
+  updateShip: async (companyId: string, shipId: string, updates: Partial<Ship>): Promise<void> => {
+    await updateDoc(shipDoc(companyId, shipId), updates as any);
   },
-  createShip: async (companyId: string, shipName: string, email: string, password: string) => {
-    if (useLocalStorage || !firestore) return localDB.createShip(companyId, shipName, email, password);
-    try {
-      const shipRef = doc(collection(firestore, 'ships'));
-      const newShip = { shipId: shipRef.id, shipName, email, password, active: true, isArchived: false, companyId };
-      await setDoc(shipRef, newShip);
-      return newShip as any;
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.createShip(companyId, shipName, email, password);
-    }
+
+  updateShipArchived: async (companyId: string, shipId: string, isArchived: boolean): Promise<void> => {
+    await updateDoc(shipDoc(companyId, shipId), { isArchived } as any);
   },
-  updateShip: async (shipId: string, updates: Partial<Ship>) => {
-    if (useLocalStorage || !firestore) return localDB.updateShip(shipId, updates);
-    try {
-      await updateDoc(doc(firestore, 'ships', shipId), updates);
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.updateShip(shipId, updates);
-    }
+
+  authenticateVessel: async (username: string, password: string): Promise<Ship | null> => {
+    // Global search across all companies would require collectionGroup.
+    // We keep it simple: vessel must login inside a company context OR we do a collectionGroup query later.
+    // For now we do collectionGroup to support "single login screen" requirement.
+    const { collectionGroup } = await import('firebase/firestore');
+    const q = query(
+      collectionGroup(firestore, 'ships'),
+      where('username', '==', username),
+      where('password', '==', password),
+      where('isArchived', '==', false)
+    );
+    const snap = await getDocs(q);
+    if (snap.empty) return null;
+
+    const d = snap.docs[0];
+    const data = d.data() as any;
+
+    return {
+      shipId: d.id,
+      shipName: data.shipName,
+      username: data.username,
+      password: data.password,
+      active: data.active,
+      isArchived: data.isArchived,
+      companyId: data.companyId
+    } as Ship;
   },
-  updateShipArchived: async (shipId: string, isArchived: boolean) => {
-    if (useLocalStorage || !firestore) return localDB.updateShipArchived(shipId, isArchived);
-    try {
-      await updateDoc(doc(firestore, 'ships', shipId), { isArchived });
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.updateShipArchived(shipId, isArchived);
-    }
+
+  // --- Reports ---
+  getReports: async (companyId: string, month: string): Promise<MonthlyReport[]> => {
+    const q = query(reportsCol(companyId), where('month', '==', month));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => d.data() as MonthlyReport);
   },
-  authenticateVessel: async (email: string, password: string) => {
-    if (useLocalStorage || !firestore) return localDB.authenticateVessel(email, password);
-    try {
-      const q = query(collection(firestore, 'ships'), where('email', '==', email), where('password', '==', password), where('isArchived', '==', false));
-      const snapshot = await getDocs(q);
-      if (snapshot.empty) return null;
-      return { shipId: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Ship;
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.authenticateVessel(email, password);
-    }
+
+  getReport: async (companyId: string, month: string, shipId: string): Promise<MonthlyReport | null> => {
+    const rid = `${month}_${shipId}`;
+    const snap = await getDoc(reportDoc(companyId, rid));
+    return snap.exists() ? (snap.data() as MonthlyReport) : null;
   },
-  getReports: async (companyId: string, month: string) => {
-    if (useLocalStorage || !firestore) return localDB.getReports(companyId, month);
-    try {
-      const q = query(collection(firestore, 'reports'), where('month', '==', month), where('companyId', '==', companyId));
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => doc.data() as MonthlyReport);
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.getReports(companyId, month);
-    }
+
+  saveReport: async (report: MonthlyReport): Promise<void> => {
+    const rid = `${report.month}_${report.shipId}`;
+    await setDoc(reportDoc(report.companyId, rid), { ...report, updatedAt: Date.now() }, { merge: true });
   },
-  getReport: async (companyId: string, month: string, shipId: string) => {
-    if (useLocalStorage || !firestore) return localDB.getReport(companyId, month, shipId);
-    try {
-      const snapshot = await getDoc(doc(firestore, 'reports', `${month}_${shipId}`));
-      return snapshot.exists() ? (snapshot.data() as MonthlyReport) : null;
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.getReport(companyId, month, shipId);
-    }
-  },
-  saveReport: async (report: MonthlyReport) => {
-    if (useLocalStorage || !firestore) return localDB.saveReport(report);
-    try {
-      await setDoc(doc(firestore, 'reports', `${report.month}_${report.shipId}`), { ...report, updatedAt: Date.now() }, { merge: true });
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.saveReport(report);
-    }
-  },
-  updateReportStatus: async (month: string, shipId: string, status: ReportStatus) => {
-    if (useLocalStorage || !firestore) return localDB.updateReportStatus(month, shipId, status);
-    try {
-      const reportId = `${month}_${shipId}`;
-      const updates: any = { status, updatedAt: Date.now() };
-      if (status === ReportStatus.SUBMITTED) updates.submittedAt = Date.now();
-      await updateDoc(doc(firestore, 'reports', reportId), updates);
-    } catch (e) {
-      useLocalStorage = true;
-      return localDB.updateReportStatus(month, shipId, status);
-    }
+
+  updateReportStatus: async (companyId: string, month: string, shipId: string, status: ReportStatus): Promise<void> => {
+    const rid = `${month}_${shipId}`;
+    const updates: any = { status, updatedAt: Date.now() };
+    if (status === ReportStatus.SUBMITTED) updates.submittedAt = Date.now();
+    await updateDoc(reportDoc(companyId, rid), updates);
   }
 };

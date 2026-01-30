@@ -1,6 +1,7 @@
-
 import React, { useState } from 'react';
 import { UserProfile, UserRole } from '../types';
+import { auth, db } from '../services/db';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
 
 interface SignupProps {
   onSignup: (profile: UserProfile) => void;
@@ -14,31 +15,42 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
     password: '',
   });
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr(null);
     setLoading(true);
-    
-    setTimeout(() => {
-      const companyId = formData.companyName.toLowerCase().replace(/\s+/g, '-');
-      const mockProfile: UserProfile = {
-        uid: 'company_uid_' + Math.random().toString(36).substr(2, 9),
+
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
+      const uid = cred.user.uid;
+
+      await db.createCompany(uid, formData.companyName);
+
+      const profile: UserProfile = {
+        uid,
         email: formData.email,
         role: UserRole.COMPANY,
-        companyId,
+        companyId: uid,
       };
-      onSignup(mockProfile);
+
+      onSignup(profile);
+    } catch (e: any) {
+      console.error(e);
+      setErr(e?.message || 'Signup failed.');
       setLoading(false);
-    }, 1200);
+    }
   };
 
-  const darkInput = "w-full bg-slate-900 text-white font-bold border border-slate-700 rounded-xl px-5 py-3 outline-none focus:ring-2 focus:ring-blue-500 transition-all placeholder-slate-500";
+  const darkInput =
+    "w-full bg-slate-900 text-white font-bold border border-slate-700 rounded-xl px-5 py-3 outline-none focus:ring-2 focus:ring-blue-500 transition-all placeholder-slate-500";
 
   return (
     <div className="flex-1 flex items-center justify-center p-4 bg-slate-100">
       <div className="max-w-md w-full bg-white rounded-[32px] shadow-2xl overflow-hidden border border-slate-200">
         <div className="bg-slate-900 p-10 text-center relative">
-          <button 
+          <button
             onClick={onBack}
             className="absolute left-6 top-6 text-slate-500 hover:text-white transition-colors"
           >
@@ -47,10 +59,17 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
             </svg>
           </button>
           <h1 className="text-2xl font-black text-white tracking-tighter uppercase">Fleet Registry</h1>
-          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-2">Create Manager Account</p>
+          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-2">Create Company Account</p>
         </div>
+
         <div className="p-10">
           <form onSubmit={handleSubmit} className="space-y-5">
+            {err && (
+              <div className="bg-rose-50 border border-rose-100 text-rose-600 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-center">
+                {err}
+              </div>
+            )}
+
             <div>
               <label className="block text-[10px] font-black uppercase text-slate-400 mb-2 ml-1">Company Name</label>
               <input
@@ -61,6 +80,7 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
                 onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
               />
             </div>
+
             <div>
               <label className="block text-[10px] font-black uppercase text-slate-400 mb-2 ml-1">Admin Email</label>
               <input
@@ -72,8 +92,9 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
               />
             </div>
+
             <div>
-              <label className="block text-[10px] font-black uppercase text-slate-400 mb-2 ml-1">Master Password</label>
+              <label className="block text-[10px] font-black uppercase text-slate-400 mb-2 ml-1">Password</label>
               <input
                 required
                 type="password"
@@ -83,6 +104,7 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
               />
             </div>
+
             <button
               type="submit"
               disabled={loading}

@@ -1,7 +1,7 @@
-
 import React, { useState } from 'react';
 import { UserProfile, UserRole } from '../types';
-import { db } from '../services/db';
+import { db, auth } from '../services/db';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 
 interface LoginProps {
   onLogin: (profile: UserProfile) => void;
@@ -9,14 +9,14 @@ interface LoginProps {
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
-  const [email, setEmail] = useState('');
+  const [usernameOrEmail, setUsernameOrEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) {
+    if (!usernameOrEmail || !password) {
       setError('Please fill in all fields.');
       return;
     }
@@ -24,46 +24,52 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
     setError(null);
     setLoading(true);
 
+    // 1) Try Company login (Firebase Auth)
     try {
-      // 1. Try Vessel login first
-      const ship = await db.authenticateVessel(email, password);
-      
-      if (ship) {
-        const profile: UserProfile = {
-          uid: ship.shipId,
-          email: ship.email,
-          role: UserRole.VESSEL,
-          companyId: ship.companyId || 'company_001',
-          shipId: ship.shipId,
-          shipName: ship.shipName,
-        };
-        onLogin(profile);
-      } else {
-        // 2. If no vessel found, check for Manager (Admin) login
-        // Mock admin check based on email containing 'admin' or password being 'admin123'
-        if (email.toLowerCase().includes('admin') || password === 'admin123') {
-          setTimeout(() => {
-            const mockProfile: UserProfile = {
-              uid: 'mock_uid_admin',
-              email: email || 'admin@company.com',
-              role: UserRole.COMPANY,
-              companyId: 'company_001',
-            };
-            onLogin(mockProfile);
-          }, 500);
-        } else {
-          setError('Invalid credentials. Please check your email and password.');
-          setLoading(false);
-        }
+      const cred = await signInWithEmailAndPassword(auth, usernameOrEmail, password);
+      const uid = cred.user.uid;
+
+      const profile: UserProfile = {
+        uid,
+        email: cred.user.email || usernameOrEmail,
+        role: UserRole.COMPANY,
+        companyId: uid
+      };
+      onLogin(profile);
+      return;
+    } catch (_) {
+      // ignore and try vessel
+    }
+
+    // 2) Try Vessel login (Firestore ships collectionGroup)
+    try {
+      const ship = await db.authenticateVessel(usernameOrEmail.toUpperCase(), password);
+      if (!ship) {
+        setError('Invalid credentials. Please check your username/email and password.');
+        setLoading(false);
+        return;
       }
+
+      const profile: UserProfile = {
+        uid: ship.shipId,
+        role: UserRole.VESSEL,
+        companyId: ship.companyId,
+        shipId: ship.shipId,
+        shipName: ship.shipName,
+        username: ship.username
+      };
+
+      onLogin(profile);
+      return;
     } catch (err) {
       console.error(err);
-      setError('An error occurred during login. Please check your database connection.');
+      setError('Login error. Please check Firebase connection.');
       setLoading(false);
     }
   };
 
-  const darkInput = "w-full bg-slate-900 text-white font-bold border border-slate-700 rounded-xl px-5 py-4 outline-none focus:ring-4 focus:ring-blue-500/20 transition-all placeholder-slate-500 text-sm";
+  const darkInput =
+    "w-full bg-slate-900 text-white font-bold border border-slate-700 rounded-xl px-5 py-4 outline-none focus:ring-4 focus:ring-blue-500/20 transition-all placeholder-slate-500 text-sm";
 
   return (
     <div className="flex-1 flex items-center justify-center p-4 bg-slate-100 min-h-screen">
@@ -75,9 +81,11 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
             </svg>
           </div>
           <h1 className="text-3xl font-black text-white uppercase tracking-tighter italic">Provision Tracker</h1>
-          <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.3em] mt-3">Ship Provision Tracking System</p>
+          <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.3em] mt-3">
+            Ship Provision Tracking System
+          </p>
         </div>
-        
+
         <div className="p-10 pt-12">
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
@@ -85,20 +93,23 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
                 {error}
               </div>
             )}
-            
+
             <div className="space-y-2">
-              <label className="block text-[10px] font-black uppercase text-slate-400 ml-1 tracking-widest">User Email</label>
+              <label className="block text-[10px] font-black uppercase text-slate-400 ml-1 tracking-widest">
+                Email (Company) / Username (Vessel)
+              </label>
               <input
-                type="email"
                 className={darkInput}
-                placeholder="mail@fleet.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                placeholder="admin@company.com or ADVANTAGE_SUMMER"
+                value={usernameOrEmail}
+                onChange={(e) => setUsernameOrEmail(e.target.value)}
               />
             </div>
-            
+
             <div className="space-y-2">
-              <label className="block text-[10px] font-black uppercase text-slate-400 ml-1 tracking-widest">Password / Master Key</label>
+              <label className="block text-[10px] font-black uppercase text-slate-400 ml-1 tracking-widest">
+                Password
+              </label>
               <input
                 type="password"
                 className={darkInput}
@@ -107,7 +118,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
-            
+
             <button
               type="submit"
               disabled={loading}
@@ -116,9 +127,9 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
               {loading ? 'Checking Credentials...' : 'Login'}
             </button>
           </form>
-          
+
           <div className="mt-12 text-center border-t border-slate-50 pt-8">
-            <button 
+            <button
               onClick={(e) => { e.preventDefault(); onNavigateToSignup(); }}
               className="text-slate-400 text-[9px] font-black uppercase tracking-[0.2em] hover:text-blue-600 transition-colors"
             >
