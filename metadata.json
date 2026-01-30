@@ -1,0 +1,5 @@
+{
+  "name": "Provision Tracker",
+  "description": "A lightweight web app for tracking ship provision costs, calculating daily consumption per person, and managing monthly inventory submissions for vessels and management companies.",
+  "requestFramePermissions": []
+}
