@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { UserProfile, UserRole } from '../types';
-import { db, auth } from '../services/db';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { UserProfile } from '../types';
+import { db } from '../services/db';
 
 interface LoginProps {
   onLogin: (profile: UserProfile) => void;
@@ -9,14 +8,15 @@ interface LoginProps {
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
-  const [usernameOrEmail, setUsernameOrEmail] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!usernameOrEmail || !password) {
+
+    if (!email || !password) {
       setError('Please fill in all fields.');
       return;
     }
@@ -24,46 +24,14 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
     setError(null);
     setLoading(true);
 
-    // 1) Try Company login (Firebase Auth)
     try {
-      const cred = await signInWithEmailAndPassword(auth, usernameOrEmail, password);
-      const uid = cred.user.uid;
-
-      const profile: UserProfile = {
-        uid,
-        email: cred.user.email || usernameOrEmail,
-        role: UserRole.COMPANY,
-        companyId: uid
-      };
+      // ✅ Company + Vessel aynı: Auth + users/{uid} profile
+      const profile = await db.loginAny(email, password);
       onLogin(profile);
-      return;
-    } catch (_) {
-      // ignore and try vessel
-    }
-
-    // 2) Try Vessel login (Firestore ships collectionGroup)
-    try {
-      const ship = await db.authenticateVessel(usernameOrEmail.toUpperCase(), password);
-      if (!ship) {
-        setError('Invalid credentials. Please check your username/email and password.');
-        setLoading(false);
-        return;
-      }
-
-      const profile: UserProfile = {
-        uid: ship.shipId,
-        role: UserRole.VESSEL,
-        companyId: ship.companyId,
-        shipId: ship.shipId,
-        shipName: ship.shipName,
-        username: ship.username
-      };
-
-      onLogin(profile);
-      return;
     } catch (err) {
       console.error(err);
-      setError('Login error. Please check Firebase connection.');
+      setError('Invalid credentials or missing profile.');
+    } finally {
       setLoading(false);
     }
   };
@@ -96,13 +64,14 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
 
             <div className="space-y-2">
               <label className="block text-[10px] font-black uppercase text-slate-400 ml-1 tracking-widest">
-                Email (Company) / Username (Vessel)
+                Email
               </label>
               <input
+                type="email"
                 className={darkInput}
-                placeholder="admin@company.com or ADVANTAGE_SUMMER"
-                value={usernameOrEmail}
-                onChange={(e) => setUsernameOrEmail(e.target.value)}
+                placeholder="admin@company.com / vessel@ship.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
               />
             </div>
 

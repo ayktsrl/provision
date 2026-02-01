@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
   collection,
@@ -9,12 +9,18 @@ import {
   updateDoc,
   query,
   where,
-  Firestore
+  Firestore,
 } from 'firebase/firestore';
-import { getAuth, Auth } from 'firebase/auth';
-import { ReportStatus, MonthlyReport, Ship, Company } from '../types';
+import {
+  getAuth,
+  Auth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+} from 'firebase/auth';
 
-// ✅ Your real Firebase config
+import { ReportStatus, MonthlyReport, Ship, Company, UserProfile, UserRole } from '../types';
+
 const firebaseConfig = {
   apiKey: "AIzaSyBK9L2VCiHkF-Mb_uCbjgevyPLdrWGaQkM",
   authDomain: "provisionfollowup.firebaseapp.com",
@@ -24,28 +30,77 @@ const firebaseConfig = {
   appId: "1:921802121277:web:9e9a06f4b735927aaa8a54"
 };
 
-const app = initializeApp(firebaseConfig);
-
+// --- App init
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const firestore: Firestore = getFirestore(app);
 export const auth: Auth = getAuth(app);
 
-const companiesCol = () => collection(firestore, 'companies');
+// --- Secondary app (create vessel users without logging out admin)
+const secondaryApp =
+  getApps().find(a => a.name === 'secondary')
+    ? getApps().find(a => a.name === 'secondary')!
+    : initializeApp(firebaseConfig, 'secondary');
+
+const secondaryAuth: Auth = getAuth(secondaryApp);
+
+// --- Paths
+const userDoc = (uid: string) => doc(firestore, 'users', uid);
+
 const companyDoc = (companyId: string) => doc(firestore, 'companies', companyId);
 const shipsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'ships');
 const shipDoc = (companyId: string, shipId: string) => doc(firestore, 'companies', companyId, 'ships', shipId);
+
 const reportsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'reports');
 const reportDoc = (companyId: string, reportId: string) => doc(firestore, 'companies', companyId, 'reports', reportId);
 
 export const db = {
-  // --- Companies ---
-  createCompany: async (companyId: string, name: string): Promise<void> => {
+  // Backward-compat
+  isLocal: () => false,
+
+  // -----------
+  // LOGIN (Company + Vessel)
+  // -----------
+  loginAny: async (email: string, password: string): Promise<UserProfile> => {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const uid = cred.user.uid;
+
+    const snap = await getDoc(userDoc(uid));
+    if (!snap.exists()) throw new Error('Profile not found in Firestore (users).');
+
+    return snap.data() as UserProfile;
+  },
+
+  logout: async () => {
+    await signOut(auth);
+  },
+
+  // -----------
+  // COMPANY
+  // -----------
+  createCompanyAfterAuth: async (companyName: string): Promise<UserProfile> => {
+    const current = auth.currentUser;
+    if (!current) throw new Error('Not authenticated.');
+
+    const companyId = current.uid;
+
     const payload: Company = {
       companyId,
-      name,
-      adminUid: companyId,
+      name: companyName,
+      adminUid: current.uid,
       createdAt: Date.now()
     };
+
     await setDoc(companyDoc(companyId), payload, { merge: true });
+
+    const profile: UserProfile = {
+      uid: current.uid,
+      email: current.email || '',
+      role: UserRole.COMPANY,
+      companyId
+    };
+
+    await setDoc(userDoc(current.uid), profile, { merge: true });
+    return profile;
   },
 
   getCompany: async (companyId: string): Promise<Company | null> => {
@@ -53,24 +108,49 @@ export const db = {
     return snap.exists() ? (snap.data() as Company) : null;
   },
 
-  // --- Ships ---
+  // -----------
+  // SHIPS
+  // -----------
   getShips: async (companyId: string): Promise<Ship[]> => {
     const snap = await getDocs(shipsCol(companyId));
     return snap.docs.map(d => ({ shipId: d.id, ...(d.data() as Omit<Ship, 'shipId'>) }));
   },
 
-  createShip: async (companyId: string, shipName: string, username: string, password: string): Promise<Ship> => {
+  createShip: async (companyId: string, shipName: string, email: string, password: string): Promise<Ship> => {
+    // 1) Create vessel auth user (secondary auth)
+    const vesselCred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+    const vesselUid = vesselCred.user.uid;
+
+    // cleanup secondary
+    await signOut(secondaryAuth);
+
+    // 2) Create ship doc
     const ref = doc(shipsCol(companyId));
     const newShip: Ship = {
       shipId: ref.id,
       shipName,
-      username,
+      email,
       password,
+      authUid: vesselUid,
       active: true,
       isArchived: false,
       companyId
     };
+
     await setDoc(ref, newShip);
+
+    // 3) Create vessel profile
+    const vesselProfile: UserProfile = {
+      uid: vesselUid,
+      email,
+      role: UserRole.VESSEL,
+      companyId,
+      shipId: ref.id,
+      shipName
+    };
+
+    await setDoc(userDoc(vesselUid), vesselProfile, { merge: true });
+
     return newShip;
   },
 
@@ -82,35 +162,9 @@ export const db = {
     await updateDoc(shipDoc(companyId, shipId), { isArchived } as any);
   },
 
-  authenticateVessel: async (username: string, password: string): Promise<Ship | null> => {
-    // Global search across all companies would require collectionGroup.
-    // We keep it simple: vessel must login inside a company context OR we do a collectionGroup query later.
-    // For now we do collectionGroup to support "single login screen" requirement.
-    const { collectionGroup } = await import('firebase/firestore');
-    const q = query(
-      collectionGroup(firestore, 'ships'),
-      where('username', '==', username),
-      where('password', '==', password),
-      where('isArchived', '==', false)
-    );
-    const snap = await getDocs(q);
-    if (snap.empty) return null;
-
-    const d = snap.docs[0];
-    const data = d.data() as any;
-
-    return {
-      shipId: d.id,
-      shipName: data.shipName,
-      username: data.username,
-      password: data.password,
-      active: data.active,
-      isArchived: data.isArchived,
-      companyId: data.companyId
-    } as Ship;
-  },
-
-  // --- Reports ---
+  // -----------
+  // REPORTS
+  // -----------
   getReports: async (companyId: string, month: string): Promise<MonthlyReport[]> => {
     const q = query(reportsCol(companyId), where('month', '==', month));
     const snap = await getDocs(q);
@@ -135,3 +189,5 @@ export const db = {
     await updateDoc(reportDoc(companyId, rid), updates);
   }
 };
+
+export default db;

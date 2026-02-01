@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UserProfile, UserRole } from '../types';
+import { UserProfile } from '../types';
 import { auth, db } from '../services/db';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 
@@ -15,30 +15,26 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
     password: '',
   });
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErr(null);
+    setError(null);
     setLoading(true);
 
     try {
-      const cred = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
-      const uid = cred.user.uid;
+      // 1) Auth create
+      await createUserWithEmailAndPassword(auth, formData.email, formData.password);
 
-      await db.createCompany(uid, formData.companyName);
+      // 2) Write companies/{uid} and users/{uid}
+      const profile = await db.createCompanyAfterAuth(formData.companyName);
 
-      const profile: UserProfile = {
-        uid,
-        email: formData.email,
-        role: UserRole.COMPANY,
-        companyId: uid,
-      };
-
+      // 3) Go in
       onSignup(profile);
-    } catch (e: any) {
-      console.error(e);
-      setErr(e?.message || 'Signup failed.');
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || 'Signup failed');
+    } finally {
       setLoading(false);
     }
   };
@@ -64,9 +60,9 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
 
         <div className="p-10">
           <form onSubmit={handleSubmit} className="space-y-5">
-            {err && (
-              <div className="bg-rose-50 border border-rose-100 text-rose-600 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-center">
-                {err}
+            {error && (
+              <div className="bg-rose-50 border border-rose-100 text-rose-600 px-5 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest text-center">
+                {error}
               </div>
             )}
 
@@ -87,7 +83,7 @@ const CompanySignup: React.FC<SignupProps> = ({ onSignup, onBack }) => {
                 required
                 type="email"
                 className={darkInput}
-                placeholder="admin@global.com"
+                placeholder="admin@company.com"
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
               />
