@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
   collection,
+  collectionGroup,
   doc,
   setDoc,
   getDoc,
@@ -9,6 +10,7 @@ import {
   updateDoc,
   query,
   where,
+  limit,
   Firestore,
 } from 'firebase/firestore';
 import {
@@ -22,25 +24,22 @@ import {
 import { ReportStatus, MonthlyReport, Ship, Company, UserProfile, UserRole } from '../types';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBK9L2VCiHkF-Mb_uCbjgevyPLdrWGaQkM",
-  authDomain: "provisionfollowup.firebaseapp.com",
-  projectId: "provisionfollowup",
-  storageBucket: "provisionfollowup.firebasestorage.app",
-  messagingSenderId: "921802121277",
-  appId: "1:921802121277:web:9e9a06f4b735927aaa8a54"
+  apiKey: 'AIzaSyBK9L2VCiHkF-Mb_uCbjgevyPLdrWGaQkM',
+  authDomain: 'provisionfollowup.firebaseapp.com',
+  projectId: 'provisionfollowup',
+  storageBucket: 'provisionfollowup.firebasestorage.app',
+  messagingSenderId: '921802121277',
+  appId: '1:921802121277:web:9e9a06f4b735927aaa8a54',
 };
 
-// --- App init
+// --- App init (primary)
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const firestore: Firestore = getFirestore(app);
 export const auth: Auth = getAuth(app);
 
-// --- Secondary app (create vessel users without logging out admin)
+// --- Secondary app (create vessel users without logging out company)
 const secondaryApp =
-  getApps().find(a => a.name === 'secondary')
-    ? getApps().find(a => a.name === 'secondary')!
-    : initializeApp(firebaseConfig, 'secondary');
-
+  getApps().find((a) => a.name === 'secondary') || initializeApp(firebaseConfig, 'secondary');
 const secondaryAuth: Auth = getAuth(secondaryApp);
 
 // --- Paths
@@ -53,38 +52,65 @@ const shipDoc = (companyId: string, shipId: string) => doc(firestore, 'companies
 const reportsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'reports');
 const reportDoc = (companyId: string, reportId: string) => doc(firestore, 'companies', companyId, 'reports', reportId);
 
-// --- Helpers
-const reportId = (month: string, shipAuthUid: string) => `${month}_${shipAuthUid}`;
+const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
 export const db = {
-  // Backward-compat
+  // backward-compat
   isLocal: () => false,
 
-  // -----------
-  // LOGIN (Company + Vessel)
-  // -----------
+  // ----------------
+  // AUTH / LOGIN
+  // ----------------
   loginAny: async (email: string, password: string): Promise<UserProfile> => {
-    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const cleanEmail = normalizeEmail(email);
+
+    const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
     const uid = cred.user.uid;
 
+    // 1) Try profile
     const snap = await getDoc(userDoc(uid));
-    if (!snap.exists()) throw new Error('Profile not found in Firestore (users).');
+    if (snap.exists()) {
+      return snap.data() as UserProfile;
+    }
 
-    return snap.data() as UserProfile;
+    // 2) Profile missing → try to recover vessel profile by ship.authUid == uid
+    // (This is the exact fix for your "vessel login after register gives error" issue.)
+    const qShip = query(collectionGroup(firestore, 'ships'), where('authUid', '==', uid), limit(1));
+    const shipSnap = await getDocs(qShip);
+
+    if (!shipSnap.empty) {
+      const shipData = shipSnap.docs[0].data() as any;
+
+      const recovered: UserProfile = {
+        uid,
+        email: cred.user.email || cleanEmail,
+        role: UserRole.VESSEL,
+        companyId: shipData.companyId,
+        shipId: shipSnap.docs[0].id,
+        shipName: shipData.shipName,
+      };
+
+      // write missing profile for next logins
+      await setDoc(userDoc(uid), recovered, { merge: true });
+      return recovered;
+    }
+
+    // 3) Could be a company user who never ran createCompanyAfterAuth (rare)
+    // We don't auto-create company here because you already have signup flow.
+    throw new Error('Profile not found in Firestore (users). Run Company Signup or fix vessel profile creation.');
   },
 
   logout: async () => {
     await signOut(auth);
   },
 
-  // -----------
+  // ----------------
   // COMPANY
-  // -----------
+  // ----------------
   createCompanyAfterAuth: async (companyName: string): Promise<UserProfile> => {
     const current = auth.currentUser;
     if (!current) throw new Error('Not authenticated.');
 
-    // ✅ single id: companyId = auth uid
     const companyId = current.uid;
 
     const payload: Company = {
@@ -112,45 +138,49 @@ export const db = {
     return snap.exists() ? (snap.data() as Company) : null;
   },
 
-  // -----------
+  // ----------------
   // SHIPS
-  // -----------
+  // ----------------
   getShips: async (companyId: string): Promise<Ship[]> => {
     const snap = await getDocs(shipsCol(companyId));
-    return snap.docs.map(d => ({ shipId: d.id, ...(d.data() as Omit<Ship, 'shipId'>) }));
+    return snap.docs.map((d) => ({ shipId: d.id, ...(d.data() as Omit<Ship, 'shipId'>) }));
   },
 
   createShip: async (companyId: string, shipName: string, email: string, password: string): Promise<Ship> => {
+    const cleanEmail = normalizeEmail(email);
+
     // 1) Create vessel auth user (secondary auth)
-    const vesselCred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+    const vesselCred = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, password);
     const vesselUid = vesselCred.user.uid;
 
-    // cleanup secondary (keep admin logged in)
+    // Cleanup secondary session (optional but clean)
     await signOut(secondaryAuth);
 
-    // 2) Create ship doc (under company)
+    // 2) Create ship doc
     const ref = doc(shipsCol(companyId));
 
     const newShip: Ship = {
       shipId: ref.id,
       shipName,
-      email,
-      password,
-      authUid: vesselUid,     // ✅ IMPORTANT
+      email: cleanEmail,
+      authUid: vesselUid,
       active: true,
       isArchived: false,
       companyId,
-    } as any;
+
+      // password is optional in types; DO NOT store it (Auth already handles it)
+      // password: undefined,
+    };
 
     await setDoc(ref, newShip, { merge: true });
 
-    // 3) Create vessel profile (users/{vesselUid})
+    // 3) Create vessel profile in users/{uid}  (single ID = vesselUid)
     const vesselProfile: UserProfile = {
-      uid: vesselUid,         // ✅ single id for vessel
-      email,
+      uid: vesselUid,
+      email: cleanEmail,
       role: UserRole.VESSEL,
       companyId,
-      shipId: ref.id,         // ship document id (for listing)
+      shipId: ref.id,
       shipName,
     };
 
@@ -167,51 +197,43 @@ export const db = {
     await updateDoc(shipDoc(companyId, shipId), { isArchived } as any);
   },
 
-  // -----------
+  // ----------------
   // REPORTS
-  // -----------
+  // ----------------
   getReports: async (companyId: string, month: string): Promise<MonthlyReport[]> => {
     const q = query(reportsCol(companyId), where('month', '==', month));
     const snap = await getDocs(q);
-    return snap.docs.map(d => d.data() as MonthlyReport);
+    return snap.docs.map((d) => d.data() as MonthlyReport);
   },
 
-  /**
-   * ✅ shipAuthUid = user.uid (vessel auth uid)
-   */
-  getReport: async (companyId: string, month: string, shipAuthUid: string): Promise<MonthlyReport | null> => {
-    const rid = reportId(month, shipAuthUid);
+  getReport: async (companyId: string, month: string, shipId: string): Promise<MonthlyReport | null> => {
+    const rid = `${month}_${shipId}`;
     const snap = await getDoc(reportDoc(companyId, rid));
     return snap.exists() ? (snap.data() as MonthlyReport) : null;
   },
 
-  /**
-   * ✅ report must contain shipAuthUid
-   * doc id: `${month}_${shipAuthUid}`
-   */
   saveReport: async (report: MonthlyReport): Promise<void> => {
-    const shipAuthUid = (report as any).shipAuthUid;
-    if (!shipAuthUid) throw new Error('MonthlyReport missing shipAuthUid');
+    // report.companyId MUST be set by UI
+    const rid = `${report.month}_${report.shipId}`;
 
-    const rid = reportId(report.month, shipAuthUid);
+    // IMPORTANT: keep shipAuthUid in report for rules
+    if (!report.companyId) throw new Error('report.companyId is missing');
+    if (!report.shipAuthUid) throw new Error('report.shipAuthUid is missing');
 
     await setDoc(
       reportDoc(report.companyId, rid),
-      { ...report, id: rid, updatedAt: Date.now() },
+      { ...report, updatedAt: Date.now() },
       { merge: true }
     );
   },
 
-  /**
-   * ✅ use shipAuthUid (NOT shipId)
-   */
   updateReportStatus: async (
     companyId: string,
     month: string,
-    shipAuthUid: string,
+    shipId: string,
     status: ReportStatus
   ): Promise<void> => {
-    const rid = reportId(month, shipAuthUid);
+    const rid = `${month}_${shipId}`;
     const updates: any = { status, updatedAt: Date.now() };
     if (status === ReportStatus.SUBMITTED) updates.submittedAt = Date.now();
     await updateDoc(reportDoc(companyId, rid), updates);

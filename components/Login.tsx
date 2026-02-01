@@ -10,13 +10,27 @@ interface LoginProps {
 const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const friendlyError = (err: any) => {
+    const code = err?.code || '';
+    if (code === 'auth/invalid-email') return 'Invalid email format.';
+    if (code === 'auth/user-not-found') return 'User not found.';
+    if (code === 'auth/wrong-password') return 'Wrong password.';
+    if (code === 'auth/invalid-credential') return 'Invalid credentials.';
+    if (code === 'auth/user-disabled') return 'This account is disabled.';
+    return 'Invalid credentials or missing profile.';
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!email || !password) {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password;
+
+    if (!cleanEmail || !cleanPassword) {
       setError('Please fill in all fields.');
       return;
     }
@@ -25,12 +39,21 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
     setLoading(true);
 
     try {
-      // ✅ Company + Vessel aynı: Auth + users/{uid} profile
-      const profile = await db.loginAny(email, password);
+      // ✅ Company + Vessel same flow:
+      // Auth login -> read users/{uid} -> returns UserProfile
+      const profile = await db.loginAny(cleanEmail, cleanPassword);
+
+      // Extra guard (helps catch missing fields early)
+      if (!profile?.uid || !profile?.role || !profile?.companyId) {
+        throw new Error('Profile is incomplete in Firestore (users/{uid}).');
+      }
+
       onLogin(profile);
-    } catch (err) {
-      console.error(err);
-      setError('Invalid credentials or missing profile.');
+      return;
+    } catch (err: any) {
+      console.error('LOGIN ERROR:', err);
+      setError(friendlyError(err));
+      return;
     } finally {
       setLoading(false);
     }
@@ -48,7 +71,9 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
               <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" />
             </svg>
           </div>
-          <h1 className="text-3xl font-black text-white uppercase tracking-tighter italic">Provision Tracker</h1>
+          <h1 className="text-3xl font-black text-white uppercase tracking-tighter italic">
+            Provision Tracker
+          </h1>
           <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.3em] mt-3">
             Ship Provision Tracking System
           </p>
@@ -72,6 +97,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
                 placeholder="admin@company.com / vessel@ship.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
               />
             </div>
 
@@ -85,6 +111,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
               />
             </div>
 
@@ -99,7 +126,10 @@ const Login: React.FC<LoginProps> = ({ onLogin, onNavigateToSignup }) => {
 
           <div className="mt-12 text-center border-t border-slate-50 pt-8">
             <button
-              onClick={(e) => { e.preventDefault(); onNavigateToSignup(); }}
+              onClick={(e) => {
+                e.preventDefault();
+                onNavigateToSignup();
+              }}
               className="text-slate-400 text-[9px] font-black uppercase tracking-[0.2em] hover:text-blue-600 transition-colors"
             >
               Register New Company
