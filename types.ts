@@ -19,16 +19,21 @@ export interface UserProfile {
   // Vessel users
   shipId?: string;
   shipName?: string;
-  username?: string;
 }
 
 export interface Ship {
   shipId: string;
   shipName: string;
 
-  // Vessel login
-  username: string;
-  password: string;
+  // Vessel login (email-based)
+  email: string;
+
+  // ⚠️ Do not use in rules/auth checks; keep only if you want to display it to company.
+  // Better: remove later. For now, optional to avoid breaking UI.
+  password?: string;
+
+  // Firebase Auth UID of vessel user (created with secondary auth)
+  authUid: string;
 
   active: boolean;
   isArchived: boolean;
@@ -62,25 +67,31 @@ export interface SupplyEntry {
 
 export interface MonthlyReport {
   id: string;
+
+  // Important for filtering & rules
+  companyId: string;
+  shipAuthUid: string;
+
   month: string;
   shipId: string;
   shipName: string;
+
   crewCount: number;
   guestMeals: number;
+
   guestMealDetails?: Record<string, GuestEntry[]>;
   supplyEntries?: SupplyEntry[];
+
   items: Record<string, ProvisionItem[]>;
   openingTotal: number;
   suppliesTotal: number;
   closingTotal: number;
   consumptionTotal: number;
   dailyPerPerson: number;
+
   status: ReportStatus;
   updatedAt: number;
   submittedAt?: number;
-
-  // Important for company filtering
-  companyId: string;
 }
 
 export interface Company {

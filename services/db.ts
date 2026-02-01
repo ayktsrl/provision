@@ -53,6 +53,9 @@ const shipDoc = (companyId: string, shipId: string) => doc(firestore, 'companies
 const reportsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'reports');
 const reportDoc = (companyId: string, reportId: string) => doc(firestore, 'companies', companyId, 'reports', reportId);
 
+// --- Helpers
+const reportId = (month: string, shipAuthUid: string) => `${month}_${shipAuthUid}`;
+
 export const db = {
   // Backward-compat
   isLocal: () => false,
@@ -81,13 +84,14 @@ export const db = {
     const current = auth.currentUser;
     if (!current) throw new Error('Not authenticated.');
 
+    // ✅ single id: companyId = auth uid
     const companyId = current.uid;
 
     const payload: Company = {
       companyId,
       name: companyName,
       adminUid: current.uid,
-      createdAt: Date.now()
+      createdAt: Date.now(),
     };
 
     await setDoc(companyDoc(companyId), payload, { merge: true });
@@ -96,7 +100,7 @@ export const db = {
       uid: current.uid,
       email: current.email || '',
       role: UserRole.COMPANY,
-      companyId
+      companyId,
     };
 
     await setDoc(userDoc(current.uid), profile, { merge: true });
@@ -121,32 +125,33 @@ export const db = {
     const vesselCred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
     const vesselUid = vesselCred.user.uid;
 
-    // cleanup secondary
+    // cleanup secondary (keep admin logged in)
     await signOut(secondaryAuth);
 
-    // 2) Create ship doc
+    // 2) Create ship doc (under company)
     const ref = doc(shipsCol(companyId));
+
     const newShip: Ship = {
       shipId: ref.id,
       shipName,
       email,
       password,
-      authUid: vesselUid,
+      authUid: vesselUid,     // ✅ IMPORTANT
       active: true,
       isArchived: false,
-      companyId
-    };
+      companyId,
+    } as any;
 
-    await setDoc(ref, newShip);
+    await setDoc(ref, newShip, { merge: true });
 
-    // 3) Create vessel profile
+    // 3) Create vessel profile (users/{vesselUid})
     const vesselProfile: UserProfile = {
-      uid: vesselUid,
+      uid: vesselUid,         // ✅ single id for vessel
       email,
       role: UserRole.VESSEL,
       companyId,
-      shipId: ref.id,
-      shipName
+      shipId: ref.id,         // ship document id (for listing)
+      shipName,
     };
 
     await setDoc(userDoc(vesselUid), vesselProfile, { merge: true });
@@ -171,23 +176,46 @@ export const db = {
     return snap.docs.map(d => d.data() as MonthlyReport);
   },
 
-  getReport: async (companyId: string, month: string, shipId: string): Promise<MonthlyReport | null> => {
-    const rid = `${month}_${shipId}`;
+  /**
+   * ✅ shipAuthUid = user.uid (vessel auth uid)
+   */
+  getReport: async (companyId: string, month: string, shipAuthUid: string): Promise<MonthlyReport | null> => {
+    const rid = reportId(month, shipAuthUid);
     const snap = await getDoc(reportDoc(companyId, rid));
     return snap.exists() ? (snap.data() as MonthlyReport) : null;
   },
 
+  /**
+   * ✅ report must contain shipAuthUid
+   * doc id: `${month}_${shipAuthUid}`
+   */
   saveReport: async (report: MonthlyReport): Promise<void> => {
-    const rid = `${report.month}_${report.shipId}`;
-    await setDoc(reportDoc(report.companyId, rid), { ...report, updatedAt: Date.now() }, { merge: true });
+    const shipAuthUid = (report as any).shipAuthUid;
+    if (!shipAuthUid) throw new Error('MonthlyReport missing shipAuthUid');
+
+    const rid = reportId(report.month, shipAuthUid);
+
+    await setDoc(
+      reportDoc(report.companyId, rid),
+      { ...report, id: rid, updatedAt: Date.now() },
+      { merge: true }
+    );
   },
 
-  updateReportStatus: async (companyId: string, month: string, shipId: string, status: ReportStatus): Promise<void> => {
-    const rid = `${month}_${shipId}`;
+  /**
+   * ✅ use shipAuthUid (NOT shipId)
+   */
+  updateReportStatus: async (
+    companyId: string,
+    month: string,
+    shipAuthUid: string,
+    status: ReportStatus
+  ): Promise<void> => {
+    const rid = reportId(month, shipAuthUid);
     const updates: any = { status, updatedAt: Date.now() };
     if (status === ReportStatus.SUBMITTED) updates.submittedAt = Date.now();
     await updateDoc(reportDoc(companyId, rid), updates);
-  }
+  },
 };
 
 export default db;
