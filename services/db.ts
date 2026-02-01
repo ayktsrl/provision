@@ -47,10 +47,12 @@ const userDoc = (uid: string) => doc(firestore, 'users', uid);
 
 const companyDoc = (companyId: string) => doc(firestore, 'companies', companyId);
 const shipsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'ships');
-const shipDoc = (companyId: string, shipId: string) => doc(firestore, 'companies', companyId, 'ships', shipId);
+const shipDoc = (companyId: string, shipId: string) =>
+  doc(firestore, 'companies', companyId, 'ships', shipId);
 
 const reportsCol = (companyId: string) => collection(firestore, 'companies', companyId, 'reports');
-const reportDoc = (companyId: string, reportId: string) => doc(firestore, 'companies', companyId, 'reports', reportId);
+const reportDoc = (companyId: string, reportId: string) =>
+  doc(firestore, 'companies', companyId, 'reports', reportId);
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
@@ -73,31 +75,30 @@ export const db = {
       return snap.data() as UserProfile;
     }
 
-    // 2) Profile missing → try to recover vessel profile by ship.authUid == uid
-    // (This is the exact fix for your "vessel login after register gives error" issue.)
+    // 2) Profile missing → recover vessel by ship.authUid == uid
     const qShip = query(collectionGroup(firestore, 'ships'), where('authUid', '==', uid), limit(1));
     const shipSnap = await getDocs(qShip);
 
     if (!shipSnap.empty) {
-      const shipData = shipSnap.docs[0].data() as any;
+      const d = shipSnap.docs[0];
+      const shipData = d.data() as any;
 
       const recovered: UserProfile = {
         uid,
         email: cred.user.email || cleanEmail,
         role: UserRole.VESSEL,
         companyId: shipData.companyId,
-        shipId: shipSnap.docs[0].id,
+        shipId: d.id,
         shipName: shipData.shipName,
       };
 
-      // write missing profile for next logins
       await setDoc(userDoc(uid), recovered, { merge: true });
       return recovered;
     }
 
-    // 3) Could be a company user who never ran createCompanyAfterAuth (rare)
-    // We don't auto-create company here because you already have signup flow.
-    throw new Error('Profile not found in Firestore (users). Run Company Signup or fix vessel profile creation.');
+    throw new Error(
+      'Profile not found in Firestore (users). Run Company Signup or fix vessel profile creation.'
+    );
   },
 
   logout: async () => {
@@ -141,19 +142,40 @@ export const db = {
   // ----------------
   // SHIPS
   // ----------------
+  getShip: async (companyId: string, shipId: string): Promise<Ship | null> => {
+    const snap = await getDoc(shipDoc(companyId, shipId));
+    return snap.exists()
+      ? ({ shipId: snap.id, ...(snap.data() as Omit<Ship, 'shipId'>) } as Ship)
+      : null;
+  },
+
+  // ✅ Only active (not archived) ships
   getShips: async (companyId: string): Promise<Ship[]> => {
-    const snap = await getDocs(shipsCol(companyId));
+    const q = query(shipsCol(companyId), where('isArchived', '==', false));
+    const snap = await getDocs(q);
     return snap.docs.map((d) => ({ shipId: d.id, ...(d.data() as Omit<Ship, 'shipId'>) }));
   },
 
-  createShip: async (companyId: string, shipName: string, email: string, password: string): Promise<Ship> => {
+  // ✅ Archived ships (optional UI)
+  getArchivedShips: async (companyId: string): Promise<Ship[]> => {
+    const q = query(shipsCol(companyId), where('isArchived', '==', true));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ shipId: d.id, ...(d.data() as Omit<Ship, 'shipId'>) }));
+  },
+
+  createShip: async (
+    companyId: string,
+    shipName: string,
+    email: string,
+    password: string
+  ): Promise<Ship> => {
     const cleanEmail = normalizeEmail(email);
 
     // 1) Create vessel auth user (secondary auth)
     const vesselCred = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, password);
     const vesselUid = vesselCred.user.uid;
 
-    // Cleanup secondary session (optional but clean)
+    // Cleanup secondary session
     await signOut(secondaryAuth);
 
     // 2) Create ship doc
@@ -167,12 +189,10 @@ export const db = {
       active: true,
       isArchived: false,
       companyId,
+      // password: NOT stored
+    } as any;
 
-      // password is optional in types; DO NOT store it (Auth already handles it)
-      // password: undefined,
-    };
-
-    await setDoc(ref, newShip, { merge: true });
+    await setDoc(ref, { ...newShip, createdAt: Date.now() } as any, { merge: true });
 
     // 3) Create vessel profile in users/{uid}  (single ID = vesselUid)
     const vesselProfile: UserProfile = {
@@ -193,8 +213,30 @@ export const db = {
     await updateDoc(shipDoc(companyId, shipId), updates as any);
   },
 
+  // ✅ Your "delete" = archive
+  archiveShip: async (companyId: string, shipId: string): Promise<void> => {
+    await updateDoc(shipDoc(companyId, shipId), {
+      isArchived: true,
+      active: false,
+      archivedAt: Date.now(),
+    } as any);
+  },
+
+  unarchiveShip: async (companyId: string, shipId: string): Promise<void> => {
+    await updateDoc(shipDoc(companyId, shipId), {
+      isArchived: false,
+      active: true,
+      archivedAt: null,
+    } as any);
+  },
+
+  // backward compat — ama artık active/archivedAt da setliyor
   updateShipArchived: async (companyId: string, shipId: string, isArchived: boolean): Promise<void> => {
-    await updateDoc(shipDoc(companyId, shipId), { isArchived } as any);
+    await updateDoc(shipDoc(companyId, shipId), {
+      isArchived,
+      active: !isArchived,
+      archivedAt: isArchived ? Date.now() : null,
+    } as any);
   },
 
   // ----------------
@@ -213,18 +255,12 @@ export const db = {
   },
 
   saveReport: async (report: MonthlyReport): Promise<void> => {
-    // report.companyId MUST be set by UI
     const rid = `${report.month}_${report.shipId}`;
 
-    // IMPORTANT: keep shipAuthUid in report for rules
     if (!report.companyId) throw new Error('report.companyId is missing');
     if (!report.shipAuthUid) throw new Error('report.shipAuthUid is missing');
 
-    await setDoc(
-      reportDoc(report.companyId, rid),
-      { ...report, updatedAt: Date.now() },
-      { merge: true }
-    );
+    await setDoc(reportDoc(report.companyId, rid), { ...report, updatedAt: Date.now() }, { merge: true });
   },
 
   updateReportStatus: async (
